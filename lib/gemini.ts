@@ -1,8 +1,11 @@
 import { GoogleGenAI } from "@google/genai";
 import { LANGUAGES } from "./languages";
 
-const DEFAULT_FALLBACK_MODELS =
-  "gemini-2.5-flash,gemini-2.5-flash-lite,gemini-3-flash,gemini-3.1-flash-lite";
+// gemini-2.5-flash, gemini-2.5-flash-lite and gemini-3-flash have all been
+// retired by Google ahead of their published shutdown dates (returning 404
+// "no longer available" instead of a normal response) — keep this list to
+// models that are still actually serving.
+const DEFAULT_FALLBACK_MODELS = "gemini-3.6-flash,gemini-3.1-flash-lite";
 
 function getApiKeys(): string[] {
   const multi = process.env.GEMINI_API_KEYS;
@@ -42,6 +45,16 @@ function getModelChain(): string[] {
 function isTransientError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
   return /"code":\s*(503|429)|UNAVAILABLE|RESOURCE_EXHAUSTED|overloaded|high demand|quota/i.test(message);
+}
+
+// Google periodically retires models ahead of their published shutdown date
+// (seen with gemini-2.5-flash / gemini-2.5-flash-lite in July 2026). That
+// shows up as a 404 rather than a 429/503, so it needs its own check: no
+// point retrying the same dead model, but it should NOT abort the whole
+// chain — just move straight on to the next model/key.
+function isModelUnavailableError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /"code":\s*404|NOT_FOUND|no longer available/i.test(message);
 }
 
 async function withRetry<T>(fn: () => Promise<T>, retries = 2, baseDelayMs = 500): Promise<T> {
@@ -86,7 +99,7 @@ async function generateWithModelFallback(promptText: string): Promise<string> {
         lastErr = new Error(`Gemini model ${model} returned an empty response`);
       } catch (err) {
         lastErr = err;
-        if (!isTransientError(err)) {
+        if (!isTransientError(err) && !isModelUnavailableError(err)) {
           throw err;
         }
         console.log(

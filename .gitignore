@@ -1,8 +1,9 @@
 node_modules/
 .env
 .env.local
-.vercel/
-*.log
-
-.vercel
 .env*
+!.env.example
+.vercel/
+.vercel
+*.log
+desktop.ini
