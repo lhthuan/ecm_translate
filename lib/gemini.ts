@@ -30,6 +30,45 @@ function getClient(apiKey: string): GoogleGenAI {
   return client;
 }
 
+// Google has been returning 403 PERMISSION_DENIED ("Your project has been
+// denied access") for generateContent calls made from Vercel's serverless
+// IP range, while the exact same key/model works fine from other networks.
+// When GEMINI_PROXY_URL is set, route the actual generateContent call
+// through a small relay running on Google's own infrastructure (Apps
+// Script) instead of calling generativelanguage.googleapis.com directly.
+// The relay forwards Google's response (success or error JSON) unchanged,
+// so isTransientError/isModelUnavailableError below keep working as-is.
+async function callGenerateContent(
+  apiKey: string,
+  model: string,
+  promptText: string
+): Promise<string | undefined> {
+  const proxyUrl = process.env.GEMINI_PROXY_URL;
+  if (!proxyUrl) {
+    const response = await getClient(apiKey).models.generateContent({
+      model,
+      contents: [{ role: "user", parts: [{ text: promptText }] }],
+    });
+    return response.text?.trim();
+  }
+
+  const res = await fetch(proxyUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      secret: process.env.GEMINI_PROXY_SECRET,
+      model,
+      contents: [{ role: "user", parts: [{ text: promptText }] }],
+    }),
+  });
+  const json: any = await res.json();
+  if (json.error) {
+    throw new Error(JSON.stringify(json.error));
+  }
+  const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
+  return typeof text === "string" ? text.trim() : undefined;
+}
+
 function getModelChain(): string[] {
   const primary = process.env.GEMINI_MODEL || "gemini-3.5-flash";
   const fallbacks = (process.env.GEMINI_FALLBACK_MODELS || DEFAULT_FALLBACK_MODELS)
@@ -86,13 +125,7 @@ async function generateWithModelFallback(promptText: string): Promise<string> {
   for (const [keyIndex, apiKey] of apiKeys.entries()) {
     for (const model of models) {
       try {
-        const response = await withRetry(() =>
-          getClient(apiKey).models.generateContent({
-            model,
-            contents: [{ role: "user", parts: [{ text: promptText }] }],
-          })
-        );
-        const text = response.text?.trim();
+        const text = await withRetry(() => callGenerateContent(apiKey, model, promptText));
         if (text) {
           return text;
         }
@@ -138,9 +171,6 @@ export async function pingGemini(): Promise<{ model: string; sample: string }> {
     throw new Error("Missing GEMINI_API_KEY (or GEMINI_API_KEYS) env var");
   }
   const model = process.env.GEMINI_MODEL || "gemini-3.5-flash";
-  const response = await getClient(apiKeys[0]).models.generateContent({
-    model,
-    contents: [{ role: "user", parts: [{ text: "Reply with exactly one word: OK" }] }],
-  });
-  return { model, sample: response.text?.trim() ?? "" };
+  const sample = await callGenerateContent(apiKeys[0], model, "Reply with exactly one word: OK");
+  return { model, sample: sample ?? "" };
 }
