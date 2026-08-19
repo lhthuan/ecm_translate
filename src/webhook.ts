@@ -70,13 +70,24 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
 
   console.log("[webhook] received:", JSON.stringify(body));
 
-  if (eventName === "message.text.received" && message?.text) {
-    const isNew = message.message_id ? await markProcessedOnce(redisConfig, message.message_id) : true;
+  // Links embedded in an ordinary text message still arrive as normal
+  // message.text (translateText/translateForPair preserve the URL as-is —
+  // see src/lib/gemini.ts). Photos/stickers sent WITH a caption carry the
+  // caption text separately (message.caption) even though we can't do
+  // anything with the image/sticker itself — translate that caption the
+  // same way as a text message. Only a message with truly no text/caption
+  // at all (bare link previews, stickers, voice, message.unsupported.received
+  // — Zalo's webhook payload carries zero content fields for those, verified
+  // 2026-08-19) has nothing for us to translate.
+  const contentText = message?.text ?? message?.caption;
+
+  if (contentText) {
+    const isNew = message?.message_id ? await markProcessedOnce(redisConfig, message.message_id) : true;
     if (!isNew) {
-      console.log(`[webhook] duplicate delivery for message_id=${message.message_id}, skipping`);
-    } else {
+      console.log(`[webhook] duplicate delivery for message_id=${message?.message_id}, skipping`);
+    } else if (message) {
       try {
-        const stepResult = await handleTextMessage(env, redisConfig, geminiConfig, message.chat, message.from.id, message.text);
+        const stepResult = await handleTextMessage(env, redisConfig, geminiConfig, message.chat, message.from.id, contentText);
         translated = stepResult.translated;
         sendResult = stepResult.sendResult;
       } catch (err) {
@@ -95,23 +106,19 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       }
     }
   } else {
-    console.log("[webhook] ignored: event_name not message.text.received or missing text", eventName);
-    // Zalo classifies some messages (links, images, stickers, voice) under
-    // event names we don't translate (message.unsupported.received etc.)
-    // and — for the "unsupported" case at least — never includes any text/
-    // url field we could act on even if we wanted to. Previously this
-    // branch did nothing at all, which looked exactly like the bot being
-    // dead (2026-08-19: confirmed via raw webhook logs that several
-    // "silence" reports coincided with message.unsupported.received
-    // events, not a real outage). In a private chat, tell the user why
-    // instead of staying silent; skip it in groups to avoid replying to
-    // every sticker/image other people send.
-    if (message && eventName !== "message.text.received" && message.chat.chat_type !== "GROUP") {
+    console.log("[webhook] ignored: no text/caption content", eventName);
+    // Previously this branch did nothing at all, which looked exactly like
+    // the bot being dead (2026-08-19: confirmed via raw webhook logs that
+    // several "silence" reports coincided with message.unsupported.received
+    // events carrying no content, not a real outage). In a private chat,
+    // tell the user why instead of staying silent; skip it in groups to
+    // avoid replying to every sticker/image other people send.
+    if (message && message.chat.chat_type !== "GROUP") {
       try {
         await sendMessage(
           env.ZALO_BOT_TOKEN,
           message.chat.id,
-          "Xin lỗi, mình chỉ dịch được tin nhắn văn bản thuần — link, ảnh, sticker, tin nhắn thoại đều chưa hỗ trợ được. Vui lòng gửi lại dưới dạng văn bản."
+          "Xin lỗi, mình chỉ dịch được tin nhắn văn bản thuần (link kèm trong tin nhắn hoặc caption ảnh vẫn dịch được) — ảnh/sticker/voice không kèm chữ thì chưa hỗ trợ."
         );
       } catch (sendErr) {
         console.error("[webhook] failed to send unsupported-message notice:", sendErr);

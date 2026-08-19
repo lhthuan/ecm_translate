@@ -139,13 +139,36 @@ async function generateWithModelFallback(config: GeminiConfig, promptText: strin
   throw lastErr;
 }
 
+// Pull URLs out of the text before sending it to Gemini and put the exact
+// original strings back afterward, instead of letting the model translate
+// (and risk mangling/truncating) them. `[[URL0]]`-style tokens survive
+// translation reliably in practice; the prompt also tells the model not to
+// touch them, as a second layer.
+const URL_RE = /\bhttps?:\/\/[^\s<>"')\]]+/gi;
+
+function maskUrls(text: string): { masked: string; urls: string[] } {
+  const urls: string[] = [];
+  const masked = text.replace(URL_RE, (match) => {
+    urls.push(match);
+    return `[[URL${urls.length - 1}]]`;
+  });
+  return { masked, urls };
+}
+
+function restoreUrls(text: string, urls: string[]): string {
+  return text.replace(/\[\[URL(\d+)\]\]/g, (whole, idx) => urls[Number(idx)] ?? whole);
+}
+
 export async function translateText(config: GeminiConfig, text: string, targetLangCode: string): Promise<string> {
   const targetLangName = LANGUAGES[targetLangCode]?.english ?? targetLangCode;
-  return generateWithModelFallback(
+  const { masked, urls } = maskUrls(text);
+  const translated = await generateWithModelFallback(
     config,
     `Translate the text below into ${targetLangName}. ` +
-      `Reply with only the translated text, no explanations, no quotes, no extra commentary.\n\n${text}`
+      `Reply with only the translated text, no explanations, no quotes, no extra commentary. ` +
+      `Tokens like [[URL0]], [[URL1]] stand in for links — copy them through completely unchanged, do not translate or alter them.\n\n${masked}`
   );
+  return restoreUrls(translated, urls);
 }
 
 export async function translateForPair(
@@ -156,13 +179,16 @@ export async function translateForPair(
 ): Promise<string> {
   const nameA = LANGUAGES[langCodeA]?.english ?? langCodeA;
   const nameB = LANGUAGES[langCodeB]?.english ?? langCodeB;
-  return generateWithModelFallback(
+  const { masked, urls } = maskUrls(text);
+  const translated = await generateWithModelFallback(
     config,
     `This is a two-language group chat: ${nameA} and ${nameB}. ` +
       `If the text below is written in ${nameA}, translate it into ${nameB}. ` +
       `If it is written in ${nameB} (or any other language), translate it into ${nameA}. ` +
-      `Reply with only the translated text, no explanations, no quotes, no extra commentary.\n\n${text}`
+      `Reply with only the translated text, no explanations, no quotes, no extra commentary. ` +
+      `Tokens like [[URL0]], [[URL1]] stand in for links — copy them through completely unchanged, do not translate or alter them.\n\n${masked}`
   );
+  return restoreUrls(translated, urls);
 }
 
 export async function pingGemini(config: GeminiConfig): Promise<{ model: string; sample: string }> {
