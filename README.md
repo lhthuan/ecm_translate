@@ -2,6 +2,11 @@
 
 API trung gian (Node.js/TypeScript, deploy trên Vercel) nhận webhook từ **Zalo Bot**, dịch nội dung tin nhắn qua **Gemini API**, rồi gửi kết quả trả lời lại người dùng qua Zalo Bot API.
 
+> Xem [MAINTENANCE.md](./MAINTENANCE.md) để biết kiến trúc đầy đủ, toàn bộ
+> biến môi trường, lịch sử sự cố (model bị Google rút, key bị chặn, Vercel
+> IP bị chặn + proxy workaround), và cách debug khi bot lỗi. README này chỉ
+> là hướng dẫn cài đặt nhanh.
+
 ## Luồng hoạt động
 
 1. Người dùng nhắn tin cho Zalo Bot.

@@ -52,16 +52,47 @@ async function callGenerateContent(
     return response.text?.trim();
   }
 
-  const res = await fetch(proxyUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      secret: process.env.GEMINI_PROXY_SECRET,
-      model,
-      contents: [{ role: "user", parts: [{ text: promptText }] }],
-    }),
-  });
-  const json: any = await res.json();
+  // Apps Script (cold start, Google-side congestion) can occasionally take
+  // a very long time to respond. Left unbounded, that risks stacking up
+  // across retries/fallback models until Vercel's own function timeout
+  // (vercel.json maxDuration) kills the whole request mid-flight — the
+  // webhook handler never reaches its catch block or logWebhookEvent, so
+  // the user gets total silence instead of even an error message (seen
+  // 2026-08-19). Bound each attempt so a slow proxy fails fast and
+  // predictably instead.
+  let res: Response;
+  try {
+    res = await fetch(proxyUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        secret: process.env.GEMINI_PROXY_SECRET,
+        model,
+        contents: [{ role: "user", parts: [{ text: promptText }] }],
+      }),
+      signal: AbortSignal.timeout(6000),
+    });
+  } catch (err) {
+    throw new Error(
+      `Proxy request failed or timed out, likely a transient Apps Script issue: UNAVAILABLE (${
+        err instanceof Error ? err.message : err
+      })`
+    );
+  }
+  const raw = await res.text();
+  let json: any;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    // Apps Script occasionally serves an HTML error/interstitial page
+    // instead of JSON (transient platform hiccup — seen 2026-08-19, other
+    // requests minutes before/after succeeded fine). Not a code/config
+    // problem, so classify it as transient: withRetry/fallback should
+    // handle it instead of surfacing a raw JSON-parse error to the user.
+    throw new Error(
+      `Proxy returned non-JSON response (HTTP ${res.status}), likely a transient Apps Script issue: UNAVAILABLE`
+    );
+  }
   if (json.error) {
     throw new Error(JSON.stringify(json.error));
   }
@@ -125,7 +156,10 @@ async function generateWithModelFallback(promptText: string): Promise<string> {
   for (const [keyIndex, apiKey] of apiKeys.entries()) {
     for (const model of models) {
       try {
-        const text = await withRetry(() => callGenerateContent(apiKey, model, promptText));
+        // retries=1 (2 attempts max, ~6s timeout each = ~12.5s worst case
+        // per model) so 2 models * 1 key stays well under Vercel's function
+        // timeout even in the worst case — see callGenerateContent above.
+        const text = await withRetry(() => callGenerateContent(apiKey, model, promptText), 1);
         if (text) {
           return text;
         }
