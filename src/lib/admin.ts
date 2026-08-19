@@ -72,10 +72,13 @@ export async function buildAdminReport(
     }
   }
 
+  const accountLine = env.GEMINI_ACCOUNT_LABEL ? `\n\nGemini API key: ${env.GEMINI_ACCOUNT_LABEL}` : "";
+
   return (
     `📊 Trạng thái hệ thống — ${formatVietnamTime(new Date().toISOString())}\n\n` +
     `${checkLines}\n\n` +
     `${logSummary}` +
-    lastErrorLine
+    lastErrorLine +
+    accountLine
   );
 }
