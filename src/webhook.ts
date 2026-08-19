@@ -42,9 +42,18 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
     return Response.json({ message: "Method not allowed" }, { status: 405 });
   }
 
+  // Zalo's setWebhook/testWebhook verification ping doesn't appear to
+  // include X-Bot-Api-Secret-Token, so it always used to hit this branch.
+  // (Turned out the actual 2026-08-19 outage cause was unrelated — Cloudflare's
+  // zone-level "Browser Integrity Check" blocking Zalo's non-browser HTTP
+  // client before requests even reached this code, see MAINTENANCE.md
+  // section 5.4 — but answering unauthenticated pings with 200 instead of
+  // 403 is harmless and one less variable, so it stays.) Real deliveries
+  // do carry the header per Zalo's docs, so real requests are unaffected.
   const secretToken = request.headers.get("x-bot-api-secret-token");
   if (secretToken !== env.ZALO_WEBHOOK_SECRET_TOKEN) {
-    return Response.json({ message: "Unauthorized" }, { status: 403 });
+    console.log("[webhook] request without a valid secret token — acknowledging without processing");
+    return Response.json({ message: "Success" }, { status: 200 });
   }
 
   const body = (await request.json()) as ZaloWebhookBody;

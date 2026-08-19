@@ -15,10 +15,15 @@ Cập nhật lần cuối: 2026-08-19 (migrate từ Vercel sang Cloudflare Worke
 - **Hosting**: **Cloudflare Workers** (từ 2026-08-19; trước đó là Vercel — xem
   mục 5 vì sao đổi). Account Cloudflare: `36de4119b7e5ccbc132e847e833d5193`
   ("Lamhieuthuan@gmail.com's Account"). Script name: `ecm-translate`.
-  Subdomain: `lamhieuthuan.workers.dev` → URL production
-  `https://ecm-translate.lamhieuthuan.workers.dev`.
-- **Zalo webhook đang trỏ về**: `https://ecm-translate.lamhieuthuan.workers.dev/api/webhook`
-  (đổi bằng `setWebhook` ngày 2026-08-19; trước đó trỏ về Vercel).
+- **Domain production**: **`bot.trungson.me`** (custom domain, zone id
+  `46545b7462a8c07f9087084ee19735a6`) — **không dùng**
+  `ecm-translate.lamhieuthuan.workers.dev` nữa dù vẫn còn route tới cùng
+  Worker (giữ lại phòng hờ). Lý do bắt buộc phải có custom domain: xem mục
+  5.5 — domain `*.workers.dev` dùng chung không cho phép chỉnh zone-level
+  security settings, mà chính setting đó là nguyên nhân chặn webhook thật.
+- **Zalo webhook đang trỏ về**: `https://bot.trungson.me/api/webhook`
+  (đổi bằng `setWebhook` ngày 2026-08-19; trước đó trỏ về Vercel, rồi qua
+  `*.workers.dev`, cuối cùng mới ổn định ở custom domain này).
 
 ## 2. Cấu trúc project (thật, khớp code hiện tại)
 
@@ -260,7 +265,58 @@ fix).
 của mình không tự set `cache` ở đâu cả — chỉ là lớp phòng thủ cho thư viện
 ngoài.
 
-### 5.4. Việc cần làm thêm (chưa làm ngay lúc migrate)
+### 5.4. Webhook Zalo im lặng hoàn toàn trên `*.workers.dev` — nguyên nhân thật: Cloudflare Browser Integrity Check
+
+Sau khi migrate xong (mục 5.1-5.3), bot **hoàn toàn không phản hồi** tin
+nhắn Zalo thật (kể cả lệnh tĩnh như `/help`, không hề gọi Gemini) — trong
+khi tự gọi thẳng vào Worker (`curl`) hay gọi qua `/api/status` đều hoạt
+động hoàn hảo. Quá trình chẩn đoán:
+
+1. **`setWebhook`/`testWebhook` của Zalo báo lỗi 403** ngay khi đăng ký:
+   `"verification": {"ok": false, "status_code": 403, "outcome":
+   "webhook.http.403", "hint": "...Check WAF / Cloudflare rules...User-Agent
+   \"Java/<version>\"..."}`. Ban đầu tưởng đây chỉ là 1 ping-xác-nhận không
+   quan trọng (code tự trả 403 vì ping không kèm secret token) — sửa code
+   trả 200 cho request thiếu secret, deploy lại, **vẫn 403 y hệt**.
+2. Tài liệu chính thức Zalo (bot.zapps.me/docs) xác nhận: webhook **vẫn
+   được lưu dù verification pass/fail** — tức verification KHÔNG gate việc
+   lưu cấu hình. Nhưng thực tế event thật vẫn không tới → nghi ngờ
+   verification/testWebhook và luồng gửi event thật dùng chung 1 client bị
+   chặn giống nhau.
+3. Test bằng URL hoàn toàn mới (`?v=2`, chưa từng probe) → vẫn 403 → loại
+   trừ khả năng cache theo URL.
+4. Test bằng **custom domain hoàn toàn mới** (`bot.trungson.me`, chưa từng
+   tồn tại) → **vẫn 403** → loại trừ luôn giả thuyết "domain `workers.dev`
+   bị mất uy tín vì hay bị lợi dụng phishing" (dù giả thuyết đó có thật, có
+   nguồn: [LevelBLUE](https://www.levelblue.com/blogs/spiderlabs-blog/its-raining-phish-and-scams-how-cloudflare-pages-dev-and-workers-dev-domains-get-abused),
+   [Fortra](https://www.fortra.com/blog/cloudflare-pages-workers-domains-increasingly-abused-for-phishing) —
+   nhưng không phải nguyên nhân của vụ này).
+5. **Nguyên nhân thật**: zone setting **Browser Integrity Check** của
+   Cloudflare (`security_level`/`browser_check`) — tính năng chặn client
+   không gửi header giống trình duyệt thật. Client Java của Zalo (đúng như
+   hint luôn nhắc) bị chặn **ở tầng edge Cloudflare, trước khi tới được
+   code Worker** — giải thích vì sao mọi request tự test bằng `curl`/status
+   page đều OK (curl trông "giống trình duyệt" hơn), còn `webhook.http.403`
+   không hề để lại log gì trong app (bị chặn sớm hơn, code không hề chạy).
+   **Đây là setting cấp zone — không thể chỉnh trên domain dùng chung
+   `*.workers.dev`**, chỉ chỉnh được khi có **zone/domain riêng**. Đây là
+   lý do thật sự phải dùng custom domain, không phải vì uy tín domain.
+
+**Đã sửa**: tắt `browser_check` cho zone `trungson.me`
+(`PATCH /zones/{zone_id}/settings/browser_check {"value":"off"}`). Test lại
+`testWebhook` → `"ok":true, "outcome":"webhook.ok"`. Tin nhắn Zalo thật hoạt
+động bình thường ngay sau đó. `security_level` chỉnh tạm về
+`essentially_off` lúc debug rồi khôi phục lại `medium` (không phải nguyên
+nhân, không cần giữ tắt).
+
+**Nếu dựng lại zone mới hoặc thêm domain khác cho project này**: nhớ tắt
+Browser Integrity Check ngay từ đầu (Dashboard: domain → **Security →
+Settings → Browser Integrity Check**, hoặc API
+`PATCH /zones/{zone_id}/settings/browser_check {"value":"off"}`) — nếu
+không sẽ tái diễn y hệt sự cố này với bất kỳ client nào không gửi header
+kiểu trình duyệt (không chỉ riêng Zalo).
+
+### 5.5. Việc cần làm thêm (chưa làm ngay lúc migrate)
 
 - **Vercel project `ecm-translate`**: có thể xoá hoặc để nguyên (không tốn
   phí thêm nếu không có traffic — Zalo đã hết trỏ webhook về đây). Nếu xoá,
@@ -278,7 +334,7 @@ ngoài.
 
 ## 6. Cách debug nhanh khi bot lại báo lỗi
 
-1. Mở `https://ecm-translate.lamhieuthuan.workers.dev/api/status?token=<ZALO_WEBHOOK_SECRET_TOKEN>`
+1. Mở `https://bot.trungson.me/api/status?token=<ZALO_WEBHOOK_SECRET_TOKEN>`
    — xem 3 dòng Zalo/Gemini/Redis OK hay LỖI, và bảng log webhook gần nhất
    (có nội dung tin, kết quả dịch, lỗi nếu có, raw body).
 2. Nếu Gemini LỖI: đọc message trả về —
@@ -293,6 +349,13 @@ ngoài.
    (Real-time Logs hoặc Tail) để xem `console.log`/`console.error` chi
    tiết từ `src/webhook.ts`, `src/lib/gemini.ts`.
 4. Đổi secret/var xong phải **deploy lại** mới có hiệu lực (mục 3).
+5. **Nếu bot Zalo im lặng hoàn toàn** (không cả tin nhắn báo lỗi) nhưng
+   `/api/status` vẫn OK và `curl` thẳng vào webhook cũng OK: gọi
+   `testWebhook` (Zalo Bot API) để xem Zalo có tới được server không —
+   nếu báo `webhook.http.403` dù code không hề trả 403, kiểm tra lại
+   **Security → Settings → Browser Integrity Check** trên zone
+   `trungson.me` có đang bật lại không (xem mục 5.4 — đây là thủ phạm thật
+   sự của lần đầu, không phải lỗi code hay lỗi Gemini).
 
 ## 7. Ghi chú môi trường dev (máy đang code hiện tại)
 

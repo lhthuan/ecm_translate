@@ -74,10 +74,21 @@ npm run deploy               # wrangler deploy
 
 `GEMINI_MODEL`/`GEMINI_FALLBACK_MODELS` đã có giá trị mặc định trong `wrangler.toml` (`[vars]`), không bắt buộc phải set riêng.
 
-Endpoint webhook sẽ có dạng `https://<worker-name>.<subdomain>.workers.dev/api/webhook`. Đăng ký với Zalo:
+Endpoint webhook mặc định sẽ có dạng `https://<worker-name>.<subdomain>.workers.dev/api/webhook`.
+
+> **Bắt buộc dùng custom domain, không dùng `*.workers.dev` cho Zalo
+> webhook.** Zalo bị Cloudflare **Browser Integrity Check** chặn client
+> Java của họ ở tầng edge (không tới được code) — setting này chỉ chỉnh
+> được trên zone/domain riêng, không chỉnh được trên domain dùng chung
+> `*.workers.dev`. Thêm custom domain: Cloudflare Dashboard → domain của
+> bạn → Workers Routes/Custom Domains → trỏ về Worker `ecm-translate`, rồi
+> tắt **Security → Settings → Browser Integrity Check** cho domain đó. Chi
+> tiết đầy đủ: [MAINTENANCE.md § 5.4](./MAINTENANCE.md#54-webhook-zalo-im-lặng-hoàn-toàn-trên-workersdev--nguyên-nhân-thật-cloudflare-browser-integrity-check).
+
+Đăng ký webhook (dùng URL custom domain) với Zalo:
 
 ```bash
-# .env cần có PUBLIC_WEBHOOK_URL=https://.../api/webhook
+# .env cần có PUBLIC_WEBHOOK_URL=https://<your-custom-domain>/api/webhook
 npm run set-webhook
 npm run webhook-info   # kiểm tra lại
 ```
