@@ -332,6 +332,34 @@ kiểu trình duyệt (không chỉ riêng Zalo).
   dash.cloudflare.com), theo đúng thói quen revoke token tạm thời đã áp
   dụng với Vercel token trước đó.
 
+### 5.6. "Im lặng" khi gửi link/ảnh/sticker/voice — không phải sự cố, là chưa xử lý event type đó
+
+Sau khi mọi thứ ở mục 5.4 đã ổn, người dùng vẫn thấy bot "im ru" trong vài
+trường hợp. Kiểm tra raw webhook log (`/api/status`) thấy nhiều event
+**`message.unsupported.received`** — Zalo dùng event name này cho tin nhắn
+mà nó không phân loại là text thuần (rất có thể gồm cả link, cũng như
+ảnh/sticker/voice có event riêng: `message.image.received`,
+`message.sticker.received`, `message.voice.received`). Payload của
+`message.unsupported.received` **không hề kèm nội dung** (không có field
+text/url nào) — Zalo Bot API không cho webhook thấy nội dung gốc của loại
+tin nhắn này, nên **không thể dịch được dù có muốn**.
+
+Code cũ: nhánh `else` (mọi event không phải `message.text.received` kèm
+`text`) chỉ `console.log` rồi thôi — không gửi lại gì cho người dùng, trông
+y hệt bot bị treo/chết.
+
+Đã sửa trong `src/webhook.ts`: nhánh `else` giờ gửi lại 1 tin nhắn giải
+thích ngắn gọn ("chỉ dịch được tin nhắn văn bản thuần...") cho **chat
+riêng (PRIVATE)** — không gửi trong **nhóm (GROUP)** để tránh spam mỗi khi
+có người gửi sticker/ảnh trong group mà không phải nói chuyện với bot.
+
+**Giới hạn còn tồn tại**: link/ảnh/sticker/voice vẫn **không dịch được**
+(không phải bug, là giới hạn thật của Zalo Bot API — webhook không nhận
+được nội dung). Nếu sau này cần hỗ trợ dịch nội dung trong ảnh/link, sẽ
+cần nghiên cứu thêm API Zalo có field nào khác lộ ra nội dung không (ngoài
+`message.text`), hoặc yêu cầu người dùng paste link/text ra thay vì gửi
+trực tiếp.
+
 ## 6. Cách debug nhanh khi bot lại báo lỗi
 
 1. Mở `https://bot.trungson.me/api/status?token=<ZALO_WEBHOOK_SECRET_TOKEN>`

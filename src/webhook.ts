@@ -95,7 +95,28 @@ export async function handleWebhook(request: Request, env: Env): Promise<Respons
       }
     }
   } else {
-    console.log("[webhook] ignored: event_name not message.text.received or missing text");
+    console.log("[webhook] ignored: event_name not message.text.received or missing text", eventName);
+    // Zalo classifies some messages (links, images, stickers, voice) under
+    // event names we don't translate (message.unsupported.received etc.)
+    // and — for the "unsupported" case at least — never includes any text/
+    // url field we could act on even if we wanted to. Previously this
+    // branch did nothing at all, which looked exactly like the bot being
+    // dead (2026-08-19: confirmed via raw webhook logs that several
+    // "silence" reports coincided with message.unsupported.received
+    // events, not a real outage). In a private chat, tell the user why
+    // instead of staying silent; skip it in groups to avoid replying to
+    // every sticker/image other people send.
+    if (message && eventName !== "message.text.received" && message.chat.chat_type !== "GROUP") {
+      try {
+        await sendMessage(
+          env.ZALO_BOT_TOKEN,
+          message.chat.id,
+          "Xin lỗi, mình chỉ dịch được tin nhắn văn bản thuần — link, ảnh, sticker, tin nhắn thoại đều chưa hỗ trợ được. Vui lòng gửi lại dưới dạng văn bản."
+        );
+      } catch (sendErr) {
+        console.error("[webhook] failed to send unsupported-message notice:", sendErr);
+      }
+    }
   }
 
   await logWebhookEvent(redisConfig, {
