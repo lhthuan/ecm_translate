@@ -6,6 +6,7 @@ import { getChatPair, setChatPair } from "./lib/chatPair.js";
 import { isSupportedLang, listSupportedLangs, LANGUAGES } from "./lib/languages.js";
 import { logWebhookEvent } from "./lib/webhookLog.js";
 import { markProcessedOnce } from "./lib/dedupe.js";
+import { isAdmin, buildAdminReport } from "./lib/admin.js";
 import type { RedisConfig } from "./lib/redis.js";
 import type { ZaloChat, ZaloWebhookBody } from "./lib/types.js";
 
@@ -226,6 +227,16 @@ async function handleTextMessage(
       (pair ? " (đang không dùng vì /pair của chat này được ưu tiên)" : "");
     const sendResult = await sendMessage(env.ZALO_BOT_TOKEN, chatId, statusText);
     return { sendResult };
+  }
+
+  if (command === "/admin") {
+    if (!isAdmin(env, userId)) {
+      // Silently fall through to normal translation rather than revealing
+      // that a hidden admin command exists to non-admins.
+    } else {
+      const sendResult = await sendMessage(env.ZALO_BOT_TOKEN, chatId, await buildAdminReport(env, redisConfig, geminiConfig));
+      return { sendResult };
+    }
   }
 
   const pair = await getChatPair(redisConfig, chatId);

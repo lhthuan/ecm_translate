@@ -9,4 +9,7 @@ export interface Env {
   KV_REST_API_TOKEN?: string;
   UPSTASH_REDIS_REST_URL?: string;
   UPSTASH_REDIS_REST_TOKEN?: string;
+  // Comma-separated Zalo user ids allowed to use /admin. Get a user's id
+  // from a webhook log entry's "from" field (or the api/status raw body).
+  ADMIN_USER_IDS?: string;
 }

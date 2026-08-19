@@ -1,27 +1,7 @@
 import type { Env } from "./env.js";
-import { getMe } from "./lib/zalo.js";
-import { pingGemini } from "./lib/gemini.js";
-import { pingRedis } from "./lib/userLang.js";
 import { getRecentWebhookLogs } from "./lib/webhookLog.js";
 import type { RedisConfig } from "./lib/redis.js";
-
-interface CheckResult {
-  name: string;
-  ok: boolean;
-  detail: string;
-  ms: number;
-}
-
-async function runCheck(name: string, fn: () => Promise<string>): Promise<CheckResult> {
-  const start = Date.now();
-  try {
-    const detail = await fn();
-    return { name, ok: true, detail, ms: Date.now() - start };
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    return { name, ok: false, detail, ms: Date.now() - start };
-  }
-}
+import { runHealthChecks } from "./lib/health.js";
 
 function escapeHtml(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -38,19 +18,13 @@ export async function handleStatus(request: Request, env: Env): Promise<Response
     token: env.KV_REST_API_TOKEN ?? env.UPSTASH_REDIS_REST_TOKEN,
   };
 
-  const results = await Promise.all([
-    runCheck("Zalo Bot API (getMe)", async () => JSON.stringify(await getMe(env.ZALO_BOT_TOKEN))),
-    runCheck("Gemini API", async () => {
-      const r = await pingGemini({
-        apiKey: env.GEMINI_API_KEY,
-        apiKeys: env.GEMINI_API_KEYS,
-        model: env.GEMINI_MODEL,
-        fallbackModels: env.GEMINI_FALLBACK_MODELS,
-      });
-      return `model=${r.model} sample="${r.sample}"`;
-    }),
-    runCheck("Upstash Redis", () => pingRedis(redisConfig)),
-  ]);
+  const geminiConfig = {
+    apiKey: env.GEMINI_API_KEY,
+    apiKeys: env.GEMINI_API_KEYS,
+    model: env.GEMINI_MODEL,
+    fallbackModels: env.GEMINI_FALLBACK_MODELS,
+  };
+  const results = await runHealthChecks(env, redisConfig, geminiConfig);
 
   const rows = results
     .map(
