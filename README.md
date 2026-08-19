@@ -104,6 +104,7 @@ build + deploy thủ công qua Cloudflare API đã dùng để deploy lần đ�
 - `/setlang <mã>` — đặt ngôn ngữ đích cá nhân, ví dụ `/setlang en`.
 - `/pair <mã1> <mã2>` — bật dịch 2 chiều cho cả chat (ưu tiên hơn `/setlang`), dùng được cả nhóm lẫn chat riêng. Trong nhóm cần @mention bot hoặc reply tin bot.
 - `/status` — xem cấu hình hiện tại của chat/user.
+- `/admin` — (ẩn, chỉ user trong `ADMIN_USER_IDS`) xem chỉ số hệ thống: Zalo/Gemini/Redis OK hay LỖI + thời gian phản hồi, thống kê 30 webhook gần nhất, lỗi gần nhất nếu có. Cùng dữ liệu với `/api/status` nhưng gọn hơn, xem ngay trong chat.
 - Tin nhắn thường khác sẽ được dịch tự động theo cấu hình trên.
 
 Danh sách mã ngôn ngữ hỗ trợ: `src/lib/languages.ts`.

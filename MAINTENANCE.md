@@ -55,6 +55,10 @@ src/lib/webhookLog.ts     Ghi/đọc log webhook gần đây (hiển thị ở s
 src/lib/userLang.ts       Ngôn ngữ đích theo user + pingRedis().
 src/lib/redis.ts          Helper `redisClient(config)` dùng chung bởi 4 lib
                          Redis ở trên (trước đây mỗi file tự lặp lại).
+src/lib/health.ts         `runHealthChecks()` — ping Zalo/Gemini/Redis, dùng
+                         chung bởi status.ts và lib/admin.ts.
+src/lib/admin.ts          `isAdmin()` + `buildAdminReport()` cho lệnh
+                         `/admin` — xem mục "Lệnh Zalo Bot" trong README.
 src/lib/languages.ts      Danh sách ngôn ngữ hỗ trợ.
 src/lib/types.ts          Kiểu dữ liệu webhook/API Zalo.
 scripts/                 set-webhook.ts, delete-webhook.ts, webhook-info.ts
@@ -91,6 +95,7 @@ Variables and Secrets. Đã set thủ công qua Cloudflare API ngày 2026-08-19
 | `GEMINI_FALLBACK_MODELS` | Var (`wrangler.toml`) | Mặc định `gemini-3.6-flash,gemini-3.1-flash-lite` |
 | `KV_REST_API_URL` / `KV_REST_API_TOKEN` | Secret | REST URL/token của Upstash Redis database (lấy từ Upstash console hoặc — lúc migrate — copy lại từ Vercel dashboard vì `.env` local không có giá trị thật) |
 | `PUBLIC_WEBHOOK_URL` | Chỉ `.env` local | Dùng bởi `npm run set-webhook`, không phải Worker secret |
+| `ADMIN_USER_IDS` | Secret | User id Zalo (phân cách dấu phẩy) được dùng lệnh ẩn `/admin`. Hiện set `e5c432857cc99597ccd8` |
 
 **Đổi secret/var xong phải deploy lại** thì Worker mới dùng giá trị mới
 (giống Vercel — bindings được "chốt" vào từng deployment).
@@ -332,7 +337,29 @@ kiểu trình duyệt (không chỉ riêng Zalo).
   dash.cloudflare.com), theo đúng thói quen revoke token tạm thời đã áp
   dụng với Vercel token trước đó.
 
-### 5.6. "Im lặng" khi gửi link/ảnh/sticker/voice — không phải sự cố, là chưa xử lý event type đó
+### 5.6. Tin nhắn chứa link — Zalo không gửi nội dung qua webhook (giới hạn nền tảng, không sửa được)
+
+**Đã xác nhận chắc chắn (2026-08-19), kể cả với tin nhắn có RẤT NHIỀU chữ
+kèm 1 link**: hễ tin nhắn chứa link là Zalo gửi `message.unsupported.received`
+với **0 field nội dung** — không có `text`, không `caption`, không gì cả —
+bất kể có bao nhiêu chữ đi kèm link đó. Test thật: tin nhắn ~15 dòng tiếng
+Hàn + 1 link Google Drive → raw webhook body chỉ có
+`date/chat/message_id/from`, không có nổi 1 ký tự nội dung.
+
+Tài liệu chính thức (bot.zapps.me/docs/webhook/) xác nhận đây là **chủ
+đích**: hệ thống gửi `message.unsupported.received` thay vì nội dung thật
+"để đảm bảo tuân thủ pháp lý" (legal compliance) cho tin nhắn thuộc diện
+đặc biệt, và **"không có cơ chế nào để lấy lại nội dung gốc"**. Đây là
+giới hạn nền tảng Zalo, khả năng để chống spam/phishing qua link — **không
+phải bug, không có cách nào sửa từ phía code của mình.**
+
+Hệ quả: tính năng "tách link, chỉ dịch phần chữ" (mục 5.7 bên dưới) *đúng
+về mặt logic* nhưng **không bao giờ có cơ hội chạy** với tin nhắn chứa
+link thật từ Zalo — vì webhook không hề nhận được nội dung để mà tách. Nó
+vẫn hữu ích cho trường hợp lý thuyết khác (nếu sau này Zalo đổi hành vi,
+hoặc nếu dùng chung code cho nền tảng khác không có giới hạn này).
+
+### 5.7. "Im lặng" khi gửi link/ảnh/sticker/voice — không phải sự cố, là chưa xử lý event type đó
 
 Sau khi mọi thứ ở mục 5.4 đã ổn, người dùng vẫn thấy bot "im ru" trong vài
 trường hợp. Kiểm tra raw webhook log (`/api/status`) thấy nhiều event
