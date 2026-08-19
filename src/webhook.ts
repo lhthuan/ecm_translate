@@ -1,12 +1,13 @@
-import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { sendMessage, sendChatAction, getCachedBotInfo } from "../lib/zalo";
-import { translateText, translateForPair } from "../lib/gemini";
-import { getUserLang, setUserLang } from "../lib/userLang";
-import { getChatPair, setChatPair } from "../lib/chatPair";
-import { isSupportedLang, listSupportedLangs, LANGUAGES } from "../lib/languages";
-import { logWebhookEvent } from "../lib/webhookLog";
-import { markProcessedOnce } from "../lib/dedupe";
-import type { ZaloChat, ZaloWebhookBody } from "../lib/types";
+import type { Env } from "./env.js";
+import { sendMessage, sendChatAction, getCachedBotInfo } from "./lib/zalo.js";
+import { translateText, translateForPair, type GeminiConfig } from "./lib/gemini.js";
+import { getUserLang, setUserLang } from "./lib/userLang.js";
+import { getChatPair, setChatPair } from "./lib/chatPair.js";
+import { isSupportedLang, listSupportedLangs, LANGUAGES } from "./lib/languages.js";
+import { logWebhookEvent } from "./lib/webhookLog.js";
+import { markProcessedOnce } from "./lib/dedupe.js";
+import type { RedisConfig } from "./lib/redis.js";
+import type { ZaloChat, ZaloWebhookBody } from "./lib/types.js";
 
 const HELP_TEXT =
   "Xin chào! Gửi bất kỳ tin nhắn văn bản nào, mình sẽ dịch sang ngôn ngữ đích đã đặt.\n\n" +
@@ -20,21 +21,38 @@ const HELP_TEXT =
   "Các mã ngôn ngữ hỗ trợ:\n" +
   listSupportedLangs();
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== "POST") {
-    res.status(405).json({ message: "Method not allowed" });
-    return;
+function redisConfigFromEnv(env: Env): RedisConfig {
+  return {
+    url: env.KV_REST_API_URL ?? env.UPSTASH_REDIS_REST_URL,
+    token: env.KV_REST_API_TOKEN ?? env.UPSTASH_REDIS_REST_TOKEN,
+  };
+}
+
+function geminiConfigFromEnv(env: Env): GeminiConfig {
+  return {
+    apiKey: env.GEMINI_API_KEY,
+    apiKeys: env.GEMINI_API_KEYS,
+    model: env.GEMINI_MODEL,
+    fallbackModels: env.GEMINI_FALLBACK_MODELS,
+  };
+}
+
+export async function handleWebhook(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "POST") {
+    return Response.json({ message: "Method not allowed" }, { status: 405 });
   }
 
-  const secretToken = req.headers["x-bot-api-secret-token"];
-  if (secretToken !== process.env.ZALO_WEBHOOK_SECRET_TOKEN) {
-    res.status(403).json({ message: "Unauthorized" });
-    return;
+  const secretToken = request.headers.get("x-bot-api-secret-token");
+  if (secretToken !== env.ZALO_WEBHOOK_SECRET_TOKEN) {
+    return Response.json({ message: "Unauthorized" }, { status: 403 });
   }
 
-  const body = req.body as ZaloWebhookBody;
+  const body = (await request.json()) as ZaloWebhookBody;
   const message = body?.message;
   const eventName = body?.event_name;
+
+  const redisConfig = redisConfigFromEnv(env);
+  const geminiConfig = geminiConfigFromEnv(env);
 
   let ok = true;
   let error: string | undefined;
@@ -44,12 +62,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   console.log("[webhook] received:", JSON.stringify(body));
 
   if (eventName === "message.text.received" && message?.text) {
-    const isNew = message.message_id ? await markProcessedOnce(message.message_id) : true;
+    const isNew = message.message_id ? await markProcessedOnce(redisConfig, message.message_id) : true;
     if (!isNew) {
       console.log(`[webhook] duplicate delivery for message_id=${message.message_id}, skipping`);
     } else {
       try {
-        const stepResult = await handleTextMessage(message.chat, message.from.id, message.text);
+        const stepResult = await handleTextMessage(env, redisConfig, geminiConfig, message.chat, message.from.id, message.text);
         translated = stepResult.translated;
         sendResult = stepResult.sendResult;
       } catch (err) {
@@ -58,6 +76,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         console.error("[webhook] failed to handle message:", err);
         try {
           await sendMessage(
+            env.ZALO_BOT_TOKEN,
             message.chat.id,
             "Xin lỗi, hệ thống dịch đang gặp sự cố tạm thời (server Gemini quá tải). Vui lòng thử lại sau ít phút."
           );
@@ -70,7 +89,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log("[webhook] ignored: event_name not message.text.received or missing text");
   }
 
-  await logWebhookEvent({
+  await logWebhookEvent(redisConfig, {
     eventName,
     chatId: message?.chat?.id,
     userId: message?.from?.id,
@@ -82,16 +101,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     rawBody: body,
   });
 
-  res.status(200).json({ message: "Success" });
+  return Response.json({ message: "Success" }, { status: 200 });
 }
 
-async function stripMention(chat: ZaloChat, text: string): Promise<string> {
+async function stripMention(env: Env, chat: ZaloChat, text: string): Promise<string> {
   if (chat.chat_type !== "GROUP") {
     return text.trim();
   }
   const trimmed = text.trim();
   try {
-    const bot = await getCachedBotInfo();
+    const bot = await getCachedBotInfo(env.ZALO_BOT_TOKEN);
     const mentionNames = [bot.display_name, bot.account_name].filter((n): n is string => Boolean(n));
     for (const name of mentionNames) {
       const prefix = `@${name}`;
@@ -106,16 +125,19 @@ async function stripMention(chat: ZaloChat, text: string): Promise<string> {
 }
 
 async function handleTextMessage(
+  env: Env,
+  redisConfig: RedisConfig,
+  geminiConfig: GeminiConfig,
   chat: ZaloChat,
   userId: string,
   rawText: string
 ): Promise<{ translated?: string; sendResult: unknown }> {
   const chatId = chat.id;
-  const trimmed = await stripMention(chat, rawText);
+  const trimmed = await stripMention(env, chat, rawText);
   const command = trimmed.split(/\s+/)[0]?.toLowerCase();
 
   if (command === "/start" || command === "/help") {
-    const sendResult = await sendMessage(chatId, HELP_TEXT);
+    const sendResult = await sendMessage(env.ZALO_BOT_TOKEN, chatId, HELP_TEXT);
     return { sendResult };
   }
 
@@ -123,13 +145,15 @@ async function handleTextMessage(
     const [codeA, codeB] = trimmed.split(/\s+/).slice(1).map((c) => c.toLowerCase());
     if (!codeA || !codeB || !isSupportedLang(codeA) || !isSupportedLang(codeB) || codeA === codeB) {
       const sendResult = await sendMessage(
+        env.ZALO_BOT_TOKEN,
         chatId,
         `Cú pháp: /pair <mã1> <mã2>, ví dụ: /pair ko vi\nCác mã hỗ trợ:\n${listSupportedLangs()}`
       );
       return { sendResult };
     }
-    await setChatPair(chatId, codeA, codeB);
+    await setChatPair(redisConfig, chatId, codeA, codeB);
     const sendResult = await sendMessage(
+      env.ZALO_BOT_TOKEN,
       chatId,
       `Đã bật dịch 2 chiều cho chat này: ${LANGUAGES[codeA].display} <-> ${LANGUAGES[codeB].display}.\n` +
         (chat.chat_type === "GROUP"
@@ -143,18 +167,19 @@ async function handleTextMessage(
     const code = trimmed.split(/\s+/)[1]?.toLowerCase();
     if (!code || !isSupportedLang(code)) {
       const sendResult = await sendMessage(
+        env.ZALO_BOT_TOKEN,
         chatId,
         `Ngôn ngữ không hợp lệ. Dùng: /setlang <mã>\nCác mã hỗ trợ:\n${listSupportedLangs()}`
       );
       return { sendResult };
     }
-    await setUserLang(userId, code);
-    const sendResult = await sendMessage(chatId, `Đã đặt ngôn ngữ đích: ${LANGUAGES[code].display}`);
+    await setUserLang(redisConfig, userId, code);
+    const sendResult = await sendMessage(env.ZALO_BOT_TOKEN, chatId, `Đã đặt ngôn ngữ đích: ${LANGUAGES[code].display}`);
     return { sendResult };
   }
 
   if (command === "/status") {
-    const [pair, personalLang] = await Promise.all([getChatPair(chatId), getUserLang(userId)]);
+    const [pair, personalLang] = await Promise.all([getChatPair(redisConfig, chatId), getUserLang(redisConfig, userId)]);
     const statusText =
       `Trạng thái cấu hình:\n` +
       `- Chat này (/pair): ${
@@ -162,27 +187,31 @@ async function handleTextMessage(
       }\n` +
       `- Ngôn ngữ đích cá nhân của bạn (/setlang): ${LANGUAGES[personalLang].display}` +
       (pair ? " (đang không dùng vì /pair của chat này được ưu tiên)" : "");
-    const sendResult = await sendMessage(chatId, statusText);
+    const sendResult = await sendMessage(env.ZALO_BOT_TOKEN, chatId, statusText);
     return { sendResult };
   }
 
-  const pair = await getChatPair(chatId);
+  const pair = await getChatPair(redisConfig, chatId);
   if (pair) {
-    sendChatAction(chatId, "typing").catch((err) => console.error("[webhook] typing indicator failed:", err));
+    sendChatAction(env.ZALO_BOT_TOKEN, chatId, "typing").catch((err) =>
+      console.error("[webhook] typing indicator failed:", err)
+    );
     console.log(`[webhook] pair-translating in chat ${chatId} (${pair.langA}<->${pair.langB}): "${trimmed}"`);
-    const translated = await translateForPair(trimmed, pair.langA, pair.langB);
+    const translated = await translateForPair(geminiConfig, trimmed, pair.langA, pair.langB);
     console.log(`[webhook] gemini pair-translated: "${translated}"`);
-    const sendResult = await sendMessage(chatId, translated);
+    const sendResult = await sendMessage(env.ZALO_BOT_TOKEN, chatId, translated);
     return { translated, sendResult };
   }
 
-  sendChatAction(chatId, "typing").catch((err) => console.error("[webhook] typing indicator failed:", err));
-  const targetLang = await getUserLang(userId);
+  sendChatAction(env.ZALO_BOT_TOKEN, chatId, "typing").catch((err) =>
+    console.error("[webhook] typing indicator failed:", err)
+  );
+  const targetLang = await getUserLang(redisConfig, userId);
   console.log(`[webhook] translating for user ${userId} to ${targetLang}: "${trimmed}"`);
-  const translated = await translateText(trimmed, targetLang);
+  const translated = await translateText(geminiConfig, trimmed, targetLang);
   console.log(`[webhook] gemini translated: "${translated}"`);
 
-  const sendResult = await sendMessage(chatId, translated);
+  const sendResult = await sendMessage(env.ZALO_BOT_TOKEN, chatId, translated);
   console.log("[webhook] zalo sendMessage result:", JSON.stringify(sendResult));
 
   return { translated, sendResult };

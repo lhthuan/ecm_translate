@@ -1,7 +1,12 @@
 import "dotenv/config";
-import { getWebhookInfo } from "../lib/zalo";
+import { getWebhookInfo } from "../src/lib/zalo";
 
-getWebhookInfo()
+const token = process.env.ZALO_BOT_TOKEN;
+if (!token) {
+  throw new Error("Missing ZALO_BOT_TOKEN in .env");
+}
+
+getWebhookInfo(token)
   .then((result) => console.log("Webhook info:", result))
   .catch((err) => {
     console.error(err);

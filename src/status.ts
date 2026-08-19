@@ -1,8 +1,9 @@
-import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { getMe } from "../lib/zalo";
-import { pingGemini } from "../lib/gemini";
-import { pingRedis } from "../lib/userLang";
-import { getRecentWebhookLogs } from "../lib/webhookLog";
+import type { Env } from "./env.js";
+import { getMe } from "./lib/zalo.js";
+import { pingGemini } from "./lib/gemini.js";
+import { pingRedis } from "./lib/userLang.js";
+import { getRecentWebhookLogs } from "./lib/webhookLog.js";
+import type { RedisConfig } from "./lib/redis.js";
 
 interface CheckResult {
   name: string;
@@ -26,20 +27,29 @@ function escapeHtml(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const token = typeof req.query.token === "string" ? req.query.token : "";
-  if (!process.env.ZALO_WEBHOOK_SECRET_TOKEN || token !== process.env.ZALO_WEBHOOK_SECRET_TOKEN) {
-    res.status(403).send("Unauthorized. Truy cập kèm query param ?token=<ZALO_WEBHOOK_SECRET_TOKEN>");
-    return;
+export async function handleStatus(request: Request, env: Env): Promise<Response> {
+  const token = new URL(request.url).searchParams.get("token") ?? "";
+  if (!env.ZALO_WEBHOOK_SECRET_TOKEN || token !== env.ZALO_WEBHOOK_SECRET_TOKEN) {
+    return new Response("Unauthorized. Truy cập kèm query param ?token=<ZALO_WEBHOOK_SECRET_TOKEN>", { status: 403 });
   }
 
+  const redisConfig: RedisConfig = {
+    url: env.KV_REST_API_URL ?? env.UPSTASH_REDIS_REST_URL,
+    token: env.KV_REST_API_TOKEN ?? env.UPSTASH_REDIS_REST_TOKEN,
+  };
+
   const results = await Promise.all([
-    runCheck("Zalo Bot API (getMe)", async () => JSON.stringify(await getMe())),
+    runCheck("Zalo Bot API (getMe)", async () => JSON.stringify(await getMe(env.ZALO_BOT_TOKEN))),
     runCheck("Gemini API", async () => {
-      const r = await pingGemini();
+      const r = await pingGemini({
+        apiKey: env.GEMINI_API_KEY,
+        apiKeys: env.GEMINI_API_KEYS,
+        model: env.GEMINI_MODEL,
+        fallbackModels: env.GEMINI_FALLBACK_MODELS,
+      });
       return `model=${r.model} sample="${r.sample}"`;
     }),
-    runCheck("Upstash Redis", () => pingRedis()),
+    runCheck("Upstash Redis", () => pingRedis(redisConfig)),
   ]);
 
   const rows = results
@@ -56,7 +66,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   let webhookLogs;
   let webhookLogsError: string | undefined;
   try {
-    webhookLogs = await getRecentWebhookLogs();
+    webhookLogs = await getRecentWebhookLogs(redisConfig);
   } catch (err) {
     webhookLogsError = err instanceof Error ? err.message : String(err);
   }
@@ -115,6 +125,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 </body>
 </html>`;
 
-  res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.status(200).send(html);
+  return new Response(html, { status: 200, headers: { "Content-Type": "text/html; charset=utf-8" } });
 }

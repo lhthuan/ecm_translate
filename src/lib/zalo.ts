@@ -1,16 +1,16 @@
-import axios from "axios";
-import type { ZaloApiResponse } from "./types";
+import type { ZaloApiResponse } from "./types.js";
 
-function apiUrl(method: string): string {
-  const token = process.env.ZALO_BOT_TOKEN;
-  if (!token) {
-    throw new Error("Missing ZALO_BOT_TOKEN env var");
-  }
+function apiUrl(token: string, method: string): string {
   return `https://bot-api.zaloplatforms.com/bot${token}/${method}`;
 }
 
-async function call<T = unknown>(method: string, body: Record<string, unknown> = {}): Promise<T> {
-  const { data } = await axios.post<ZaloApiResponse<T>>(apiUrl(method), body);
+async function call<T = unknown>(token: string, method: string, body: Record<string, unknown> = {}): Promise<T> {
+  const res = await fetch(apiUrl(token, method), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = (await res.json()) as ZaloApiResponse<T>;
   if (!data.ok) {
     throw new Error(`Zalo API ${method} failed: ${data.description ?? "unknown error"} (code ${data.error_code})`);
   }
@@ -48,29 +48,29 @@ function splitMessage(text: string, maxLen = MAX_MESSAGE_LENGTH): string[] {
   return chunks;
 }
 
-export async function sendMessage(chatId: string, text: string, options: SendMessageOptions = {}) {
+export async function sendMessage(token: string, chatId: string, text: string, options: SendMessageOptions = {}) {
   const chunks = splitMessage(text);
   const results: unknown[] = [];
   for (const chunk of chunks) {
-    results.push(await call("sendMessage", { chat_id: chatId, text: chunk, ...options }));
+    results.push(await call(token, "sendMessage", { chat_id: chatId, text: chunk, ...options }));
   }
   return chunks.length === 1 ? results[0] : results;
 }
 
-export function sendChatAction(chatId: string, action: "typing" | "upload_photo") {
-  return call("sendChatAction", { chat_id: chatId, action });
+export function sendChatAction(token: string, chatId: string, action: "typing" | "upload_photo") {
+  return call(token, "sendChatAction", { chat_id: chatId, action });
 }
 
-export function setWebhook(url: string, secretToken: string) {
-  return call("setWebhook", { url, secret_token: secretToken });
+export function setWebhook(token: string, url: string, secretToken: string) {
+  return call(token, "setWebhook", { url, secret_token: secretToken });
 }
 
-export function deleteWebhook() {
-  return call("deleteWebhook");
+export function deleteWebhook(token: string) {
+  return call(token, "deleteWebhook");
 }
 
-export function getWebhookInfo() {
-  return call("getWebhookInfo");
+export function getWebhookInfo(token: string) {
+  return call(token, "getWebhookInfo");
 }
 
 export interface BotInfo {
@@ -81,15 +81,15 @@ export interface BotInfo {
   display_name?: string;
 }
 
-export function getMe() {
-  return call<BotInfo>("getMe");
+export function getMe(token: string) {
+  return call<BotInfo>(token, "getMe");
 }
 
 let cachedBotInfo: BotInfo | undefined;
 
-export async function getCachedBotInfo(): Promise<BotInfo> {
+export async function getCachedBotInfo(token: string): Promise<BotInfo> {
   if (!cachedBotInfo) {
-    cachedBotInfo = await getMe();
+    cachedBotInfo = await getMe(token);
   }
   return cachedBotInfo;
 }

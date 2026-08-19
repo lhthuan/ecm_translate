@@ -1,0 +1,11 @@
+name = "ecm-translate"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# Non-secret config. Everything else (ZALO_BOT_TOKEN, ZALO_WEBHOOK_SECRET_TOKEN,
+# GEMINI_API_KEY, KV_REST_API_URL/TOKEN, ...) is set as a secret — see
+# MAINTENANCE.md for the full list and `wrangler secret put <NAME>`.
+[vars]
+GEMINI_MODEL = "gemini-3.5-flash"
+GEMINI_FALLBACK_MODELS = "gemini-3.6-flash,gemini-3.1-flash-lite"
