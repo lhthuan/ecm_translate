@@ -74,9 +74,25 @@ async function callGenerateContent(apiKey: string, model: string, promptText: st
 // Transient/quota errors are worth retrying (same key+model) or falling back to
 // another model / API key. Anything else (bad request, invalid key, etc.) should
 // fail fast instead of masking the real problem.
+//
+// "User location is not supported for the API use" (FAILED_PRECONDITION,
+// HTTP 400) is included here too — confirmed 2026-08-22 via webhook logs
+// (intermixed OK/LỖI on otherwise-identical requests, same key/model).
+// This is a known Gemini *free-tier* restriction keyed off the outbound
+// request's origin IP, not the actual user's location or a real quota
+// problem: https://discuss.ai.google.dev/t/gemini-api-returns-user-location-is-not-supported-from-france-vps-ip-83-171-225-4/177697
+// Cloudflare Workers execute at whichever edge PoP received the request,
+// so different Zalo messages can egress to Google from different IPs —
+// some flagged, some not — which is exactly the intermittent pattern
+// observed. Retrying/falling back here is a best-effort mitigation (a
+// later attempt may egress from a different PoP), not a real fix; the
+// real fix is enabling Cloud Billing on the Gemini API key's project,
+// which lifts the free-tier restriction. See MAINTENANCE.md.
 function isTransientError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
-  return /"code":\s*(503|429)|UNAVAILABLE|RESOURCE_EXHAUSTED|overloaded|high demand|quota/i.test(message);
+  return /"code":\s*(503|429)|UNAVAILABLE|RESOURCE_EXHAUSTED|overloaded|high demand|quota|user location is not supported|FAILED_PRECONDITION/i.test(
+    message
+  );
 }
 
 // Google periodically retires models ahead of their published shutdown date

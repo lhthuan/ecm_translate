@@ -387,6 +387,49 @@ cần nghiên cứu thêm API Zalo có field nào khác lộ ra nội dung khôn
 `message.text`), hoặc yêu cầu người dùng paste link/text ra thay vì gửi
 trực tiếp.
 
+### 5.8. Lỗi "quá tải" ngắt quãng — thật ra là "User location is not supported" (free-tier Gemini + Cloudflare edge phân tán)
+
+Phát hiện 2026-08-22: sau khi mọi thứ đã ổn định (mục 5.4-5.7), người dùng
+vẫn thấy bot báo lỗi chung chung ("hệ thống dịch đang gặp sự cố tạm
+thời...") **thỉnh thoảng**, xen giữa các tin dịch thành công bình thường —
+nghi ngờ đúng: không phải Gemini thật sự quá tải. Log webhook cho lỗi thật:
+
+```json
+{"code":400,"message":"User location is not supported for the API use.","status":"FAILED_PRECONDITION"}
+```
+
+**Đây là giới hạn của gói Gemini API free-tier theo IP nguồn của request**
+(không phải theo vị trí người dùng thật, không phải quota) — nhiều báo cáo
+cộng đồng ghi nhận lỗi y hệt từ nhiều loại IP hosting/cloud khác nhau
+(Pháp, Đức, Singapore...), xem
+[thread 1](https://discuss.ai.google.dev/t/gemini-api-returns-user-location-is-not-supported-from-france-vps-ip-83-171-225-4/177697),
+[thread 2](https://discuss.ai.google.dev/t/code-400-user-location-is-not-supported-for-the-api-use-status-failed-precondition/74773).
+
+**Vì sao ngắt quãng chứ không lỗi luôn**: Cloudflare Worker chạy phân tán ở
+rất nhiều node biên (edge PoP) toàn cầu — mỗi request Zalo gửi tới có thể
+được xử lý (và gọi Google) từ 1 node/IP khác nhau. Node nào rơi vào dải IP
+bị Google flag ở free-tier thì lỗi, node khác thì không. Không liên quan
+gì tới model, tới key, hay tới sự cố thật của Gemini.
+
+**Đã vá tạm trong `src/lib/gemini.ts`**: thêm `user location is not
+supported`/`FAILED_PRECONDITION` vào `isTransientError()` để nó được
+retry/fallback thay vì bung lỗi ngay — chỉ là giảm nhẹ (lần thử sau *có
+thể* egress qua PoP khác), **không phải fix triệt để** vì retry trong cùng
+1 lần gọi webhook có thể vẫn đi qua cùng PoP.
+
+**Fix thật sự (cần làm thủ công, chưa làm)**: **bật Cloud Billing** cho
+project Google Cloud đứng sau `GEMINI_API_KEY` hiện tại
+(`lamhieuthuan@gmail.com`) — cộng đồng xác nhận rộng rãi việc bật billing
+(chuyển sang tier trả phí) giải quyết được giới hạn IP/vùng này, vì free
+tier kiểm tra khắt khe hơn hẳn. Kiểm tra tại aistudio.google.com/apikey
+(xem project có billing chưa) hoặc console.cloud.google.com/billing.
+
+**Nếu lỗi này lại xuất hiện nhiều sau khi đã bật billing**: quay lại xem
+`/admin` hoặc `/api/status` — nếu message lỗi vẫn y hệt
+`user location is not supported`, billing chưa thật sự có hiệu lực (có
+thể do link sai project) — kiểm tra lại đúng project ID đứng sau API key
+đang dùng.
+
 ## 6. Cách debug nhanh khi bot lại báo lỗi
 
 1. Mở `https://bot.trungson.me/api/status?token=<ZALO_WEBHOOK_SECRET_TOKEN>`
