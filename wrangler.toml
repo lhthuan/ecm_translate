@@ -3,6 +3,15 @@ main = "src/index.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
+# Bias which Cloudflare PoP runs this Worker toward one with good routing to
+# Google's network, instead of purely whichever PoP is closest to the
+# inbound Zalo webhook request — see MAINTENANCE.md section 5.8 for why
+# (Gemini free-tier "User location is not supported" errors, root-caused to
+# Cloudflare's normal per-request edge routing hitting different egress IPs
+# each time). This is a hint, not a hard pin, and free on all plans.
+[placement]
+region = "gcp:asia-southeast1"
+
 # Non-secret config. Everything else (ZALO_BOT_TOKEN, ZALO_WEBHOOK_SECRET_TOKEN,
 # GEMINI_API_KEY, KV_REST_API_URL/TOKEN, ...) is set as a secret — see
 # MAINTENANCE.md for the full list and `wrangler secret put <NAME>`.

@@ -430,6 +430,41 @@ tier kiểm tra khắt khe hơn hẳn. Kiểm tra tại aistudio.google.com/apik
 thể do link sai project) — kiểm tra lại đúng project ID đứng sau API key
 đang dùng.
 
+**Đã thử thêm (2026-08-22) — Cloudflare Workers Placement Hints.** Người
+dùng quyết định không bật billing/không đổi hạ tầng, nhưng đồng ý thử 1
+cách rẻ/miễn phí: `wrangler.toml` thêm
+
+```toml
+[placement]
+region = "gcp:asia-southeast1"
+```
+
+Đây là tính năng "Placement Hints" (Cloudflare, ra mắt 1/2026, miễn phí mọi
+gói) — gợi ý Cloudflare ưu tiên chạy Worker tại PoP có độ trễ thấp nhất tới
+vùng GCP chỉ định, thay vì chỉ chọn theo khoảng cách tới người gửi request.
+Đây là **gợi ý, không phải khoá cứng 1 IP/vùng** — không đảm bảo hết hẳn
+lỗi, chỉ tăng tính nhất quán của node xử lý.
+
+**Bẫy khi set qua Cloudflare API thô (không dùng `wrangler`)**: field
+`region` trong `placement` **không được tài liệu chính thức của multipart
+upload API liệt kê** (tài liệu chỉ ghi `mode: "smart"`), nhưng thực tế **API
+vẫn chấp nhận** — đã tự test và xác nhận:
+- `{"placement":{"mode":"smart","region":"gcp:..."}}` → lỗi 400
+  `"specified invalid placement mode with placement targets"` (2 field này
+  loại trừ nhau, giống mô tả trong docs `wrangler.toml`).
+- `{"placement":{"region":"gcp:asia-southeast1"}}` (không kèm `mode`) →
+  thành công, response trả về `"placement_mode":"targeted"`.
+
+Verify đã set đúng: gọi `GET
+/accounts/{account}/workers/scripts/{script}` (hoặc field tương đương),
+tìm `placement_mode: "targeted"`.
+
+**Chưa kết luận được có thực sự giảm lỗi hay không** — lỗi vốn ngắt quãng
+(không phải lần nào cũng dính) nên vài lần test ngay sau deploy không đủ để
+xác nhận. Cần theo dõi `/admin` qua vài ngày để so tỉ lệ lỗi trước/sau. Nếu
+`gcp:asia-southeast1` không cải thiện, thử đổi sang vùng khác (vd
+`gcp:us-central1`) — chỉ cần sửa 1 dòng trong `wrangler.toml` rồi deploy lại.
+
 ## 6. Cách debug nhanh khi bot lại báo lỗi
 
 1. Mở `https://bot.trungson.me/api/status?token=<ZALO_WEBHOOK_SECRET_TOKEN>`
